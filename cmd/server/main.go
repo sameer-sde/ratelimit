@@ -12,10 +12,12 @@ import (
 )
 
 type CheckRequest struct {
-	Key       string `json:"key"`
-	Limit     int    `json:"limit"`
-	Window    int    `json:"window"`
-	Algorithm string `json:"algorithm"`
+	Key       string  `json:"key"`
+	Limit     int     `json:"limit"`    // used by fixed/slog
+	Window    int     `json:"window"`   // used by fixed/slog
+	Capacity  int     `json:"capacity"` // used by token bucket
+	Refill    float64 `json:"refill"`   // tokens/sec, used by token bucket
+	Algorithm string  `json:"algorithm"`
 }
 
 type CheckResponse struct {
@@ -26,8 +28,9 @@ type CheckResponse struct {
 }
 
 type Server struct {
-	fixed *limiter.FixedWindow
-	slog  *limiter.SlidingWindowLog
+	fixed  *limiter.FixedWindow
+	slog   *limiter.SlidingWindowLog
+	bucket *limiter.TokenBucket
 }
 
 func main() {
@@ -40,8 +43,9 @@ func main() {
 	log.Println("✓ Connected to Redis")
 
 	s := &Server{
-		fixed: limiter.NewFixedWindow(rdb),
-		slog:  limiter.NewSlidingWindowLog(rdb),
+		fixed:  limiter.NewFixedWindow(rdb),
+		slog:   limiter.NewSlidingWindowLog(rdb),
+		bucket: limiter.NewTokenBucket(rdb),
 	}
 
 	http.HandleFunc("/check", s.handleCheck)
@@ -72,8 +76,8 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	if req.Key == "" || req.Limit <= 0 || req.Window <= 0 {
-		http.Error(w, "key, limit, window all required and positive", http.StatusBadRequest)
+	if req.Key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
 		return
 	}
 	if req.Algorithm == "" {
@@ -86,11 +90,25 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	)
 	switch req.Algorithm {
 	case "fixed":
+		if req.Limit <= 0 || req.Window <= 0 {
+			http.Error(w, "fixed needs limit and window", http.StatusBadRequest)
+			return
+		}
 		result, err = s.fixed.Check(r.Context(), req.Key, req.Limit, req.Window)
 	case "slog":
+		if req.Limit <= 0 || req.Window <= 0 {
+			http.Error(w, "slog needs limit and window", http.StatusBadRequest)
+			return
+		}
 		result, err = s.slog.Check(r.Context(), req.Key, req.Limit, req.Window)
+	case "bucket":
+		if req.Capacity <= 0 || req.Refill <= 0 {
+			http.Error(w, "bucket needs capacity and refill", http.StatusBadRequest)
+			return
+		}
+		result, err = s.bucket.Check(r.Context(), req.Key, req.Capacity, req.Refill)
 	default:
-		http.Error(w, "unknown algorithm: 'fixed' or 'slog'", http.StatusBadRequest)
+		http.Error(w, "unknown algorithm: 'fixed', 'slog', or 'bucket'", http.StatusBadRequest)
 		return
 	}
 
