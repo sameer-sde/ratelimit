@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sameer-sde/ratelimit/internal/cache"
 	"github.com/sameer-sde/ratelimit/internal/limiter"
 	"github.com/redis/go-redis/v9"
 )
@@ -32,6 +33,7 @@ type Server struct {
 	slog    *limiter.SlidingWindowLog
 	bucket  *limiter.TokenBucket
 	counter *limiter.SlidingWindowCounter
+	lru     *cache.LRU
 }
 
 func main() {
@@ -43,20 +45,25 @@ func main() {
 	}
 	log.Println("✓ Connected to Redis")
 
+	lru := cache.New(10000) // capacity 10k entries
+
 	s := &Server{
-		fixed:   limiter.NewFixedWindow(rdb),
+		fixed:   limiter.NewFixedWindow(rdb).WithCache(lru),
 		slog:    limiter.NewSlidingWindowLog(rdb),
 		bucket:  limiter.NewTokenBucket(rdb),
 		counter: limiter.NewSlidingWindowCounter(rdb),
+		lru:     lru,
 	}
 
 	http.HandleFunc("/check", s.handleCheck)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
+	http.HandleFunc("/cache/stats", s.handleCacheStats)
 
 	addr := ":8080"
 	log.Printf("✓ Listening on http://localhost%s", addr)
+	log.Printf("✓ LRU cache capacity: 10000 entries, decision TTL: 100ms")
 	srv := &http.Server{
 		Addr:         addr,
 		ReadTimeout:  5 * time.Second,
@@ -65,6 +72,21 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
+	hits, misses, size := s.lru.Stats()
+	total := hits + misses
+	hitRate := 0.0
+	if total > 0 {
+		hitRate = float64(hits) / float64(total) * 100
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"hits":         hits,
+		"misses":       misses,
+		"size":         size,
+		"hit_rate_pct": hitRate,
+	})
 }
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
