@@ -1,0 +1,39 @@
+-- Sliding window log rate limiter
+-- KEYS[1] = the Redis key (sorted set)
+-- ARGV[1] = limit (max requests in window)
+-- ARGV[2] = window size in seconds
+-- ARGV[3] = current time in microseconds (passed by client for determinism)
+-- ARGV[4] = unique request id (e.g. "<microseconds>-<random>")
+--
+-- Returns: { allowed (1/0), current_count, oldest_in_window_microseconds }
+
+local key      = KEYS[1]
+local limit    = tonumber(ARGV[1])
+local window   = tonumber(ARGV[2])
+local now_us   = tonumber(ARGV[3])
+local req_id   = ARGV[4]
+
+local window_us  = window * 1000000          -- convert seconds to microseconds
+local cutoff_us  = now_us - window_us         -- anything older than this is out
+
+-- 1. Evict old entries
+redis.call('ZREMRANGEBYSCORE', key, '-inf', '(' .. cutoff_us)
+--                                            ^-- '(' means exclusive
+
+-- 2. Count what survived
+local count = redis.call('ZCARD', key)
+
+-- 3. Decide. If at the limit, deny WITHOUT adding the new request.
+if count >= limit then
+    -- get the oldest remaining entry so the client knows when capacity frees up
+    local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+    local oldest_us = 0
+    if #oldest > 0 then oldest_us = tonumber(oldest[2]) end
+    return {0, count, oldest_us}
+end
+
+-- 4. Allowed — record this request
+redis.call('ZADD', key, now_us, req_id)
+redis.call('EXPIRE', key, window)   -- so empty keys eventually disappear
+
+return {1, count + 1, now_us}

@@ -7,14 +7,15 @@ import (
 	"net/http"
 	"time"
 
-        "github.com/sameer-sde/ratelimit/internal/limiter"
+	"github.com/sameer-sde/ratelimit/internal/limiter"
 	"github.com/redis/go-redis/v9"
 )
 
 type CheckRequest struct {
-	Key    string `json:"key"`
-	Limit  int    `json:"limit"`
-	Window int    `json:"window"`
+	Key       string `json:"key"`
+	Limit     int    `json:"limit"`
+	Window    int    `json:"window"`
+	Algorithm string `json:"algorithm"`
 }
 
 type CheckResponse struct {
@@ -26,6 +27,7 @@ type CheckResponse struct {
 
 type Server struct {
 	fixed *limiter.FixedWindow
+	slog  *limiter.SlidingWindowLog
 }
 
 func main() {
@@ -39,6 +41,7 @@ func main() {
 
 	s := &Server{
 		fixed: limiter.NewFixedWindow(rdb),
+		slog:  limiter.NewSlidingWindowLog(rdb),
 	}
 
 	http.HandleFunc("/check", s.handleCheck)
@@ -73,8 +76,24 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key, limit, window all required and positive", http.StatusBadRequest)
 		return
 	}
+	if req.Algorithm == "" {
+		req.Algorithm = "fixed"
+	}
 
-	result, err := s.fixed.Check(r.Context(), req.Key, req.Limit, req.Window)
+	var (
+		result *limiter.Result
+		err    error
+	)
+	switch req.Algorithm {
+	case "fixed":
+		result, err = s.fixed.Check(r.Context(), req.Key, req.Limit, req.Window)
+	case "slog":
+		result, err = s.slog.Check(r.Context(), req.Key, req.Limit, req.Window)
+	default:
+		http.Error(w, "unknown algorithm: 'fixed' or 'slog'", http.StatusBadRequest)
+		return
+	}
+
 	if err != nil {
 		log.Printf("check error: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -83,9 +102,8 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 
 	status := http.StatusOK
 	if !result.Allowed {
-		status = http.StatusTooManyRequests // 429 — the proper HTTP status
+		status = http.StatusTooManyRequests
 	}
-
 	writeJSON(w, status, CheckResponse{
 		Allowed:   result.Allowed,
 		Remaining: result.Remaining,
