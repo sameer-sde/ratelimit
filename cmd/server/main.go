@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/sameer-sde/ratelimit/internal/cache"
@@ -28,12 +29,20 @@ type CheckResponse struct {
 	ResetIn   int64 `json:"reset_in_seconds"`
 }
 
+type Metrics struct {
+	totalRequests atomic.Uint64
+	allowed       atomic.Uint64
+	denied        atomic.Uint64
+	startedAt     time.Time
+}
+
 type Server struct {
 	fixed   *limiter.FixedWindow
 	slog    *limiter.SlidingWindowLog
 	bucket  *limiter.TokenBucket
 	counter *limiter.SlidingWindowCounter
 	lru     *cache.LRU
+	metrics *Metrics
 }
 
 func main() {
@@ -45,7 +54,7 @@ func main() {
 	}
 	log.Println("✓ Connected to Redis")
 
-	lru := cache.New(10000) // capacity 10k entries
+	lru := cache.New(10000)
 
 	s := &Server{
 		fixed:   limiter.NewFixedWindow(rdb).WithCache(lru),
@@ -53,25 +62,42 @@ func main() {
 		bucket:  limiter.NewTokenBucket(rdb),
 		counter: limiter.NewSlidingWindowCounter(rdb),
 		lru:     lru,
+		metrics: &Metrics{startedAt: time.Now()},
 	}
 
-	http.HandleFunc("/check", s.handleCheck)
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/check", s.handleCheck)
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
-	http.HandleFunc("/cache/stats", s.handleCacheStats)
+	mux.HandleFunc("/cache/stats", s.handleCacheStats)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	addr := ":8080"
 	log.Printf("✓ Listening on http://localhost%s", addr)
 	log.Printf("✓ LRU cache capacity: 10000 entries, decision TTL: 100ms")
 	srv := &http.Server{
 		Addr:         addr,
+		Handler:      withCORS(mux),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +112,37 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		"misses":       misses,
 		"size":         size,
 		"hit_rate_pct": hitRate,
+	})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	total := s.metrics.totalRequests.Load()
+	allowed := s.metrics.allowed.Load()
+	denied := s.metrics.denied.Load()
+	hits, misses, cacheSize := s.lru.Stats()
+
+	uptime := time.Since(s.metrics.startedAt).Seconds()
+	rps := 0.0
+	if uptime > 0 {
+		rps = float64(total) / uptime
+	}
+
+	cacheTotal := hits + misses
+	cacheHitRate := 0.0
+	if cacheTotal > 0 {
+		cacheHitRate = float64(hits) / float64(cacheTotal) * 100
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"total_requests": total,
+		"allowed":        allowed,
+		"denied":         denied,
+		"avg_rps":        rps,
+		"uptime_seconds": uptime,
+		"cache_hits":     hits,
+		"cache_misses":   misses,
+		"cache_size":     cacheSize,
+		"cache_hit_rate": cacheHitRate,
 	})
 }
 
@@ -146,6 +203,13 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		log.Printf("check error: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+
+	s.metrics.totalRequests.Add(1)
+	if result.Allowed {
+		s.metrics.allowed.Add(1)
+	} else {
+		s.metrics.denied.Add(1)
 	}
 
 	status := http.StatusOK
