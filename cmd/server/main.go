@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,11 +31,49 @@ type CheckResponse struct {
 	ResetIn   int64 `json:"reset_in_seconds"`
 }
 
+// AlgoStats holds per-algorithm counters.
+type AlgoStats struct {
+	total   atomic.Uint64
+	allowed atomic.Uint64
+	denied  atomic.Uint64
+}
+
 type Metrics struct {
 	totalRequests atomic.Uint64
 	allowed       atomic.Uint64
 	denied        atomic.Uint64
 	startedAt     time.Time
+
+	// Per-algorithm breakdown
+	mu   sync.RWMutex
+	algo map[string]*AlgoStats
+}
+
+func (m *Metrics) record(alg string, allowed bool) {
+	m.totalRequests.Add(1)
+	if allowed {
+		m.allowed.Add(1)
+	} else {
+		m.denied.Add(1)
+	}
+	m.mu.RLock()
+	stats, ok := m.algo[alg]
+	m.mu.RUnlock()
+	if !ok {
+		m.mu.Lock()
+		stats = m.algo[alg]
+		if stats == nil {
+			stats = &AlgoStats{}
+			m.algo[alg] = stats
+		}
+		m.mu.Unlock()
+	}
+	stats.total.Add(1)
+	if allowed {
+		stats.allowed.Add(1)
+	} else {
+		stats.denied.Add(1)
+	}
 }
 
 type Server struct {
@@ -62,7 +102,10 @@ func main() {
 		bucket:  limiter.NewTokenBucket(rdb),
 		counter: limiter.NewSlidingWindowCounter(rdb),
 		lru:     lru,
-		metrics: &Metrics{startedAt: time.Now()},
+		metrics: &Metrics{
+			startedAt: time.Now(),
+			algo:      make(map[string]*AlgoStats),
+		},
 	}
 
 	mux := http.NewServeMux()
@@ -72,6 +115,7 @@ func main() {
 	})
 	mux.HandleFunc("/cache/stats", s.handleCacheStats)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/load-test", s.handleLoadTest)
 
 	addr := ":8080"
 	log.Printf("✓ Listening on http://localhost%s", addr)
@@ -79,8 +123,8 @@ func main() {
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      withCORS(mux),
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 5 * time.Second,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	}
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)
@@ -133,16 +177,143 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		cacheHitRate = float64(hits) / float64(cacheTotal) * 100
 	}
 
+	// Per-algorithm breakdown
+	s.metrics.mu.RLock()
+	perAlgo := make(map[string]map[string]uint64, len(s.metrics.algo))
+	for name, st := range s.metrics.algo {
+		perAlgo[name] = map[string]uint64{
+			"total":   st.total.Load(),
+			"allowed": st.allowed.Load(),
+			"denied":  st.denied.Load(),
+		}
+	}
+	s.metrics.mu.RUnlock()
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_requests": total,
-		"allowed":        allowed,
-		"denied":         denied,
-		"avg_rps":        rps,
-		"uptime_seconds": uptime,
-		"cache_hits":     hits,
-		"cache_misses":   misses,
-		"cache_size":     cacheSize,
-		"cache_hit_rate": cacheHitRate,
+		"total_requests":  total,
+		"allowed":         allowed,
+		"denied":          denied,
+		"avg_rps":         rps,
+		"uptime_seconds":  uptime,
+		"cache_hits":      hits,
+		"cache_misses":    misses,
+		"cache_size":      cacheSize,
+		"cache_hit_rate":  cacheHitRate,
+		"per_algorithm":   perAlgo,
+	})
+}
+
+// LoadTestRequest is what the dashboard sends to kick off a synthetic load.
+type LoadTestRequest struct {
+	Algorithm   string  `json:"algorithm"`
+	Requests    int     `json:"requests"`   // total requests to send
+	Concurrency int     `json:"concurrency"` // parallel workers
+	Key         string  `json:"key"`
+	Limit       int     `json:"limit"`
+	Window      int     `json:"window"`
+	Capacity    int     `json:"capacity"`
+	Refill      float64 `json:"refill"`
+}
+
+type LoadTestResult struct {
+	Sent       int     `json:"sent"`
+	Allowed    int     `json:"allowed"`
+	Denied     int     `json:"denied"`
+	Errors     int     `json:"errors"`
+	DurationMs int64   `json:"duration_ms"`
+	RPS        float64 `json:"rps"`
+}
+
+// handleLoadTest runs a synthetic load against one of the algorithms in-process.
+// It calls the limiter directly (no HTTP round-trip) so we can hit very high RPS.
+func (s *Server) handleLoadTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req LoadTestRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if req.Requests <= 0 || req.Requests > 50000 {
+		http.Error(w, "requests must be 1..50000", http.StatusBadRequest)
+		return
+	}
+	if req.Concurrency <= 0 {
+		req.Concurrency = 10
+	}
+	if req.Concurrency > 200 {
+		req.Concurrency = 200
+	}
+	if req.Key == "" {
+		req.Key = "loadtest_default"
+	}
+
+	var allowed, denied, errs atomic.Uint64
+	start := time.Now()
+
+	jobs := make(chan int, req.Concurrency*2)
+	var wg sync.WaitGroup
+
+	worker := func() {
+		defer wg.Done()
+		ctx := context.Background()
+		for range jobs {
+			var (
+				result *limiter.Result
+				err    error
+			)
+			switch req.Algorithm {
+			case "fixed":
+				result, err = s.fixed.Check(ctx, req.Key, req.Limit, req.Window)
+			case "slog":
+				result, err = s.slog.Check(ctx, req.Key, req.Limit, req.Window)
+			case "swc":
+				result, err = s.counter.Check(ctx, req.Key, req.Limit, req.Window)
+			case "bucket":
+				result, err = s.bucket.Check(ctx, req.Key, req.Capacity, req.Refill)
+			default:
+				errs.Add(1)
+				continue
+			}
+			if err != nil {
+				errs.Add(1)
+				continue
+			}
+			s.metrics.record(req.Algorithm, result.Allowed)
+			if result.Allowed {
+				allowed.Add(1)
+			} else {
+				denied.Add(1)
+			}
+		}
+	}
+
+	for i := 0; i < req.Concurrency; i++ {
+		wg.Add(1)
+		go worker()
+	}
+
+	for i := 0; i < req.Requests; i++ {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+
+	dur := time.Since(start)
+	rps := 0.0
+	if dur > 0 {
+		rps = float64(req.Requests) / dur.Seconds()
+	}
+
+	writeJSON(w, http.StatusOK, LoadTestResult{
+		Sent:       req.Requests,
+		Allowed:    int(allowed.Load()),
+		Denied:     int(denied.Load()),
+		Errors:     int(errs.Load()),
+		DurationMs: dur.Milliseconds(),
+		RPS:        rps,
 	})
 }
 
@@ -205,12 +376,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.metrics.totalRequests.Add(1)
-	if result.Allowed {
-		s.metrics.allowed.Add(1)
-	} else {
-		s.metrics.denied.Add(1)
-	}
+	s.metrics.record(req.Algorithm, result.Allowed)
 
 	status := http.StatusOK
 	if !result.Allowed {
@@ -229,3 +395,6 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }
+
+// silence unused import warnings that crop up depending on Go version
+var _ = fmt.Sprintf
