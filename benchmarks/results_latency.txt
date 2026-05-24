@@ -1,0 +1,149 @@
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: benchmarks/latency.js
+        output: -
+
+     scenarios: (100.00%) 1 scenario, 400 max VUs, 1m0s max duration (incl. graceful stop):
+              * constant_rps: 2000.00 iterations/s for 30s (maxVUs: 100-400, gracefulStop: 30s)
+
+
+running (0m01.0s), 001/100 VUs, 1977 complete and 0 interrupted iterations
+constant_rps   [   3% ] 001/100 VUs  01.0s/30s  2000.00 iters/s
+
+running (0m02.0s), 001/100 VUs, 3977 complete and 0 interrupted iterations
+constant_rps   [   7% ] 001/100 VUs  02.0s/30s  2000.00 iters/s
+
+running (0m03.0s), 001/100 VUs, 5977 complete and 0 interrupted iterations
+constant_rps   [  10% ] 001/100 VUs  03.0s/30s  2000.00 iters/s
+
+running (0m04.0s), 003/100 VUs, 7975 complete and 0 interrupted iterations
+constant_rps   [  13% ] 003/100 VUs  04.0s/30s  2000.00 iters/s
+
+running (0m05.0s), 001/100 VUs, 9977 complete and 0 interrupted iterations
+constant_rps   [  17% ] 001/100 VUs  05.0s/30s  2000.00 iters/s
+
+running (0m06.0s), 001/100 VUs, 11977 complete and 0 interrupted iterations
+constant_rps   [  20% ] 001/100 VUs  06.0s/30s  2000.00 iters/s
+
+running (0m07.0s), 001/100 VUs, 13977 complete and 0 interrupted iterations
+constant_rps   [  23% ] 001/100 VUs  07.0s/30s  2000.00 iters/s
+
+running (0m08.0s), 001/100 VUs, 15977 complete and 0 interrupted iterations
+constant_rps   [  27% ] 001/100 VUs  08.0s/30s  2000.00 iters/s
+
+running (0m09.0s), 001/100 VUs, 17977 complete and 0 interrupted iterations
+constant_rps   [  30% ] 001/100 VUs  09.0s/30s  2000.00 iters/s
+
+running (0m10.0s), 001/100 VUs, 19977 complete and 0 interrupted iterations
+constant_rps   [  33% ] 001/100 VUs  10.0s/30s  2000.00 iters/s
+
+running (0m11.0s), 001/100 VUs, 21977 complete and 0 interrupted iterations
+constant_rps   [  37% ] 001/100 VUs  11.0s/30s  2000.00 iters/s
+
+running (0m12.0s), 002/100 VUs, 23976 complete and 0 interrupted iterations
+constant_rps   [  40% ] 001/100 VUs  12.0s/30s  2000.00 iters/s
+
+running (0m13.0s), 002/100 VUs, 25976 complete and 0 interrupted iterations
+constant_rps   [  43% ] 002/100 VUs  13.0s/30s  2000.00 iters/s
+
+running (0m14.0s), 001/108 VUs, 27955 complete and 0 interrupted iterations
+constant_rps   [  47% ] 001/108 VUs  14.0s/30s  2000.00 iters/s
+
+running (0m15.0s), 001/108 VUs, 29955 complete and 0 interrupted iterations
+constant_rps   [  50% ] 001/108 VUs  15.0s/30s  2000.00 iters/s
+
+running (0m16.0s), 001/108 VUs, 31955 complete and 0 interrupted iterations
+constant_rps   [  53% ] 001/108 VUs  16.0s/30s  2000.00 iters/s
+
+running (0m17.0s), 001/108 VUs, 33955 complete and 0 interrupted iterations
+constant_rps   [  57% ] 001/108 VUs  17.0s/30s  2000.00 iters/s
+
+running (0m18.0s), 001/108 VUs, 35955 complete and 0 interrupted iterations
+constant_rps   [  60% ] 001/108 VUs  18.0s/30s  2000.00 iters/s
+
+running (0m19.0s), 001/108 VUs, 37955 complete and 0 interrupted iterations
+constant_rps   [  63% ] 001/108 VUs  19.0s/30s  2000.00 iters/s
+
+running (0m20.0s), 001/108 VUs, 39955 complete and 0 interrupted iterations
+constant_rps   [  67% ] 001/108 VUs  20.0s/30s  2000.00 iters/s
+
+running (0m21.0s), 001/108 VUs, 41955 complete and 0 interrupted iterations
+constant_rps   [  70% ] 001/108 VUs  21.0s/30s  2000.00 iters/s
+
+running (0m22.0s), 001/108 VUs, 43955 complete and 0 interrupted iterations
+constant_rps   [  73% ] 001/108 VUs  22.0s/30s  2000.00 iters/s
+
+running (0m23.0s), 001/108 VUs, 45955 complete and 0 interrupted iterations
+constant_rps   [  77% ] 001/108 VUs  23.0s/30s  2000.00 iters/s
+
+running (0m24.0s), 001/108 VUs, 47955 complete and 0 interrupted iterations
+constant_rps   [  80% ] 001/108 VUs  24.0s/30s  2000.00 iters/s
+
+running (0m25.0s), 001/108 VUs, 49955 complete and 0 interrupted iterations
+constant_rps   [  83% ] 001/108 VUs  25.0s/30s  2000.00 iters/s
+
+running (0m26.0s), 001/108 VUs, 51955 complete and 0 interrupted iterations
+constant_rps   [  87% ] 001/108 VUs  26.0s/30s  2000.00 iters/s
+
+running (0m27.0s), 001/108 VUs, 53955 complete and 0 interrupted iterations
+constant_rps   [  90% ] 001/108 VUs  27.0s/30s  2000.00 iters/s
+
+running (0m28.0s), 001/108 VUs, 55955 complete and 0 interrupted iterations
+constant_rps   [  93% ] 001/108 VUs  28.0s/30s  2000.00 iters/s
+
+running (0m29.0s), 001/108 VUs, 57955 complete and 0 interrupted iterations
+constant_rps   [  97% ] 001/108 VUs  29.0s/30s  2000.00 iters/s
+
+running (0m30.0s), 001/108 VUs, 59955 complete and 0 interrupted iterations
+constant_rps   [ 100% ] 001/108 VUs  30.0s/30s  2000.00 iters/s
+
+
+  █ THRESHOLDS 
+
+    http_req_duration
+    ✓ 'p(50)<10' p(50)=343µs
+    ✓ 'p(95)<30' p(95)=724µs
+    ✓ 'p(99)<100' p(99)=1.93ms
+
+    http_req_failed{expected_response:true}
+    ✓ 'rate<0.01' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 59979   1999.234692/s
+    checks_succeeded...: 100.00% 59979 out of 59979
+    checks_failed......: 0.00%   0 out of 59979
+
+    ✓ status ok
+
+    HTTP
+    http_req_duration..............: avg=559.49µs min=165µs    med=343µs    max=102.55ms p(90)=547µs    p(95)=724µs  
+      { expected_response:true }...: avg=559.49µs min=165µs    med=343µs    max=102.55ms p(90)=547µs    p(95)=724µs  
+    http_req_failed................: 0.00% 0 out of 59979
+      { expected_response:true }...: 0.00% 0 out of 59979
+    http_reqs......................: 59979 1999.234692/s
+
+    EXECUTION
+    dropped_iterations.............: 22    0.733309/s
+    iteration_duration.............: avg=605.37µs min=184.33µs med=374.29µs max=102.64ms p(90)=628.08µs p(95)=822.8µs
+    iterations.....................: 59979 1999.234692/s
+    vus............................: 1     min=0          max=2  
+    vus_max........................: 108   min=100        max=108
+
+    NETWORK
+    data_received..................: 19 MB 638 kB/s
+    data_sent......................: 11 MB 380 kB/s
+
+
+
+
+running (0m30.0s), 000/108 VUs, 59979 complete and 0 interrupted iterations
+constant_rps ✓ [ 100% ] 000/108 VUs  30s  2000.00 iters/s
