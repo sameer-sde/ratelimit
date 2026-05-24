@@ -1,9 +1,31 @@
 services:
-  redis:
+  redis-0:
     image: redis:7-alpine
-    container_name: ratelimit-redis
+    container_name: ratelimit-redis-0
     ports:
-      - "6379:6379"
+      - "6382:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  redis-1:
+    image: redis:7-alpine
+    container_name: ratelimit-redis-1
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  redis-2:
+    image: redis:7-alpine
+    container_name: ratelimit-redis-2
+    ports:
+      - "6381:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

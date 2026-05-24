@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sameer-sde/ratelimit/internal/cache"
 	"github.com/sameer-sde/ratelimit/internal/limiter"
-	"github.com/redis/go-redis/v9"
+	"github.com/sameer-sde/ratelimit/internal/rediscluster"
 )
 
 type CheckRequest struct {
@@ -25,13 +26,13 @@ type CheckRequest struct {
 }
 
 type CheckResponse struct {
-	Allowed   bool  `json:"allowed"`
-	Remaining int64 `json:"remaining"`
-	Current   int64 `json:"current"`
-	ResetIn   int64 `json:"reset_in_seconds"`
+	Allowed   bool   `json:"allowed"`
+	Remaining int64  `json:"remaining"`
+	Current   int64  `json:"current"`
+	ResetIn   int64  `json:"reset_in_seconds"`
+	Shard     string `json:"shard"`
 }
 
-// AlgoStats holds per-algorithm counters.
 type AlgoStats struct {
 	total   atomic.Uint64
 	allowed atomic.Uint64
@@ -43,9 +44,8 @@ type Metrics struct {
 	allowed       atomic.Uint64
 	denied        atomic.Uint64
 	startedAt     time.Time
-
-	mu   sync.RWMutex
-	algo map[string]*AlgoStats
+	mu            sync.RWMutex
+	algo          map[string]*AlgoStats
 }
 
 func (m *Metrics) record(alg string, allowed bool) {
@@ -76,6 +76,7 @@ func (m *Metrics) record(alg string, allowed bool) {
 }
 
 type Server struct {
+	cluster *rediscluster.Cluster
 	fixed   *limiter.FixedWindow
 	slog    *limiter.SlidingWindowLog
 	bucket  *limiter.TokenBucket
@@ -85,21 +86,26 @@ type Server struct {
 }
 
 func main() {
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
-	defer rdb.Close()
-
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		log.Fatalf("redis ping failed: %v", err)
+	cluster, err := rediscluster.New(map[string]string{
+		"redis-0": "localhost:6382",
+		"redis-1": "localhost:6380",
+		"redis-2": "localhost:6381",
+	})
+	if err != nil {
+		log.Fatalf("cluster init: %v", err)
 	}
-	log.Println("✓ Connected to Redis")
+	defer cluster.Close()
+
+	log.Printf("✓ Connected to Redis cluster (%d shards): %v", len(cluster.Nodes()), cluster.Nodes())
 
 	lru := cache.New(10000)
 
 	s := &Server{
-		fixed:   limiter.NewFixedWindow(rdb).WithCache(lru),
-		slog:    limiter.NewSlidingWindowLog(rdb),
-		bucket:  limiter.NewTokenBucket(rdb),
-		counter: limiter.NewSlidingWindowCounter(rdb),
+		cluster: cluster,
+		fixed:   limiter.NewFixedWindow(cluster).WithCache(lru),
+		slog:    limiter.NewSlidingWindowLog(cluster),
+		bucket:  limiter.NewTokenBucket(cluster),
+		counter: limiter.NewSlidingWindowCounter(cluster),
 		lru:     lru,
 		metrics: &Metrics{
 			startedAt: time.Now(),
@@ -116,10 +122,10 @@ func main() {
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/load-test", s.handleLoadTest)
 	mux.HandleFunc("/inspect/", s.handleInspect)
+	mux.HandleFunc("/cluster/info", s.handleClusterInfo)
 
 	addr := ":8080"
 	log.Printf("✓ Listening on http://localhost%s", addr)
-	log.Printf("✓ LRU cache capacity: 10000 entries, decision TTL: 100ms")
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      withCORS(mux),
@@ -152,10 +158,22 @@ func (s *Server) handleCacheStats(w http.ResponseWriter, r *http.Request) {
 		hitRate = float64(hits) / float64(total) * 100
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"hits":         hits,
-		"misses":       misses,
-		"size":         size,
-		"hit_rate_pct": hitRate,
+		"hits": hits, "misses": misses, "size": size, "hit_rate_pct": hitRate,
+	})
+}
+
+func (s *Server) handleClusterInfo(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if key != "" {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"key":   key,
+			"shard": s.cluster.NodeFor(key),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"shards": s.cluster.Nodes(),
+		"count":  len(s.cluster.Nodes()),
 	})
 }
 
@@ -164,41 +182,30 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	allowed := s.metrics.allowed.Load()
 	denied := s.metrics.denied.Load()
 	hits, misses, cacheSize := s.lru.Stats()
-
 	uptime := time.Since(s.metrics.startedAt).Seconds()
 	rps := 0.0
 	if uptime > 0 {
 		rps = float64(total) / uptime
 	}
-
 	cacheTotal := hits + misses
 	cacheHitRate := 0.0
 	if cacheTotal > 0 {
 		cacheHitRate = float64(hits) / float64(cacheTotal) * 100
 	}
-
 	s.metrics.mu.RLock()
 	perAlgo := make(map[string]map[string]uint64, len(s.metrics.algo))
 	for name, st := range s.metrics.algo {
 		perAlgo[name] = map[string]uint64{
-			"total":   st.total.Load(),
-			"allowed": st.allowed.Load(),
-			"denied":  st.denied.Load(),
+			"total": st.total.Load(), "allowed": st.allowed.Load(), "denied": st.denied.Load(),
 		}
 	}
 	s.metrics.mu.RUnlock()
-
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_requests": total,
-		"allowed":        allowed,
-		"denied":         denied,
-		"avg_rps":        rps,
-		"uptime_seconds": uptime,
-		"cache_hits":     hits,
-		"cache_misses":   misses,
-		"cache_size":     cacheSize,
-		"cache_hit_rate": cacheHitRate,
-		"per_algorithm":  perAlgo,
+		"total_requests": total, "allowed": allowed, "denied": denied,
+		"avg_rps": rps, "uptime_seconds": uptime,
+		"cache_hits": hits, "cache_misses": misses, "cache_size": cacheSize, "cache_hit_rate": cacheHitRate,
+		"per_algorithm": perAlgo,
+		"shards":        s.cluster.Nodes(),
 	})
 }
 
@@ -220,6 +227,7 @@ type LoadTestResult struct {
 	Errors     int     `json:"errors"`
 	DurationMs int64   `json:"duration_ms"`
 	RPS        float64 `json:"rps"`
+	Shard      string  `json:"shard"`
 }
 
 func (s *Server) handleLoadTest(w http.ResponseWriter, r *http.Request) {
@@ -245,10 +253,8 @@ func (s *Server) handleLoadTest(w http.ResponseWriter, r *http.Request) {
 	if req.Key == "" {
 		req.Key = "loadtest_default"
 	}
-
 	var allowed, denied, errs atomic.Uint64
 	start := time.Now()
-
 	jobs := make(chan int, req.Concurrency*2)
 	var wg sync.WaitGroup
 
@@ -285,31 +291,24 @@ func (s *Server) handleLoadTest(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
 	for i := 0; i < req.Concurrency; i++ {
 		wg.Add(1)
 		go worker()
 	}
-
 	for i := 0; i < req.Requests; i++ {
 		jobs <- i
 	}
 	close(jobs)
 	wg.Wait()
-
 	dur := time.Since(start)
 	rps := 0.0
 	if dur > 0 {
 		rps = float64(req.Requests) / dur.Seconds()
 	}
-
 	writeJSON(w, http.StatusOK, LoadTestResult{
-		Sent:       req.Requests,
-		Allowed:    int(allowed.Load()),
-		Denied:     int(denied.Load()),
-		Errors:     int(errs.Load()),
-		DurationMs: dur.Milliseconds(),
-		RPS:        rps,
+		Sent: req.Requests, Allowed: int(allowed.Load()), Denied: int(denied.Load()),
+		Errors: int(errs.Load()), DurationMs: dur.Milliseconds(), RPS: rps,
+		Shard: s.cluster.NodeFor(req.Key),
 	})
 }
 
@@ -318,7 +317,6 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-
 	var req CheckRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -331,7 +329,6 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 	if req.Algorithm == "" {
 		req.Algorithm = "fixed"
 	}
-
 	var (
 		result *limiter.Result
 		err    error
@@ -362,27 +359,23 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err = s.bucket.Check(r.Context(), req.Key, req.Capacity, req.Refill)
 	default:
-		http.Error(w, "unknown algorithm: 'fixed', 'slog', 'swc', or 'bucket'", http.StatusBadRequest)
+		http.Error(w, "unknown algorithm", http.StatusBadRequest)
 		return
 	}
-
 	if err != nil {
 		log.Printf("check error: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
 	s.metrics.record(req.Algorithm, result.Allowed)
-
 	status := http.StatusOK
 	if !result.Allowed {
 		status = http.StatusTooManyRequests
 	}
 	writeJSON(w, status, CheckResponse{
-		Allowed:   result.Allowed,
-		Remaining: result.Remaining,
-		Current:   result.Current,
-		ResetIn:   result.TTL,
+		Allowed: result.Allowed, Remaining: result.Remaining,
+		Current: result.Current, ResetIn: result.TTL,
+		Shard: s.cluster.NodeFor(req.Key),
 	})
 }
 
@@ -393,3 +386,4 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 }
 
 var _ = fmt.Sprintf
+var _ = strings.HasPrefix
