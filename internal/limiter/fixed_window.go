@@ -20,6 +20,10 @@ type FixedWindow struct {
 	cache  *cache.LRU // optional; may be nil
 }
 
+// RDB returns the underlying Redis client. Used by the /inspect endpoint.
+func (f *FixedWindow) RDB() *redis.Client {
+	return f.rdb
+}
 func NewFixedWindow(rdb *redis.Client) *FixedWindow {
 	return &FixedWindow{
 		rdb:    rdb,

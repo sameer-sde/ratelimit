@@ -44,7 +44,6 @@ type Metrics struct {
 	denied        atomic.Uint64
 	startedAt     time.Time
 
-	// Per-algorithm breakdown
 	mu   sync.RWMutex
 	algo map[string]*AlgoStats
 }
@@ -116,6 +115,7 @@ func main() {
 	mux.HandleFunc("/cache/stats", s.handleCacheStats)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/load-test", s.handleLoadTest)
+	mux.HandleFunc("/inspect/", s.handleInspect)
 
 	addr := ":8080"
 	log.Printf("✓ Listening on http://localhost%s", addr)
@@ -177,7 +177,6 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		cacheHitRate = float64(hits) / float64(cacheTotal) * 100
 	}
 
-	// Per-algorithm breakdown
 	s.metrics.mu.RLock()
 	perAlgo := make(map[string]map[string]uint64, len(s.metrics.algo))
 	for name, st := range s.metrics.algo {
@@ -190,24 +189,23 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.metrics.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"total_requests":  total,
-		"allowed":         allowed,
-		"denied":          denied,
-		"avg_rps":         rps,
-		"uptime_seconds":  uptime,
-		"cache_hits":      hits,
-		"cache_misses":    misses,
-		"cache_size":      cacheSize,
-		"cache_hit_rate":  cacheHitRate,
-		"per_algorithm":   perAlgo,
+		"total_requests": total,
+		"allowed":        allowed,
+		"denied":         denied,
+		"avg_rps":        rps,
+		"uptime_seconds": uptime,
+		"cache_hits":     hits,
+		"cache_misses":   misses,
+		"cache_size":     cacheSize,
+		"cache_hit_rate": cacheHitRate,
+		"per_algorithm":  perAlgo,
 	})
 }
 
-// LoadTestRequest is what the dashboard sends to kick off a synthetic load.
 type LoadTestRequest struct {
 	Algorithm   string  `json:"algorithm"`
-	Requests    int     `json:"requests"`   // total requests to send
-	Concurrency int     `json:"concurrency"` // parallel workers
+	Requests    int     `json:"requests"`
+	Concurrency int     `json:"concurrency"`
 	Key         string  `json:"key"`
 	Limit       int     `json:"limit"`
 	Window      int     `json:"window"`
@@ -224,8 +222,6 @@ type LoadTestResult struct {
 	RPS        float64 `json:"rps"`
 }
 
-// handleLoadTest runs a synthetic load against one of the algorithms in-process.
-// It calls the limiter directly (no HTTP round-trip) so we can hit very high RPS.
 func (s *Server) handleLoadTest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -396,5 +392,4 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// silence unused import warnings that crop up depending on Go version
 var _ = fmt.Sprintf
