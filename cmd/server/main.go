@@ -126,11 +126,17 @@ func main() {
 
 	addr := ":8080"
 	log.Printf("✓ Listening on http://localhost%s", addr)
+
+	// Day 14 tuning: tighter timeouts, idle keep-alive, smaller header cap.
+	// IdleTimeout matters most — lets k6 reuse TCP connections instead of
+	// reopening them every few seconds.
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      withCORS(mux),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:           addr,
+		Handler:        withCORS(mux),
+		ReadTimeout:    5 * time.Second,
+		WriteTimeout:   10 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 14,
 	}
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatal(err)

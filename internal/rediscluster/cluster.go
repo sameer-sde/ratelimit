@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/sameer-sde/ratelimit/internal/hashring"
 	"github.com/redis/go-redis/v9"
@@ -14,29 +15,35 @@ import (
 
 // Node represents one Redis instance the cluster knows about.
 type Node struct {
-	Name   string // logical name used on the ring, e.g. "redis-0"
-	Addr   string // host:port
+	Name   string
+	Addr   string
 	Client *redis.Client
 }
 
 // Cluster routes operations to one of N Redis instances using a consistent
-// hash ring. Construction is one-shot — call New with the node list, use it.
+// hash ring.
 type Cluster struct {
 	ring  *hashring.Ring
 	mu    sync.RWMutex
-	nodes map[string]*Node // name -> node
+	nodes map[string]*Node
 }
 
-// New connects to each address and verifies it's reachable. Returns an
-// error if any node fails to PING.
+// New connects to each address and verifies it's reachable.
+// Day 14 tuning: bigger pool (50 vs default 10), warm idle conns, fail-fast
+// pool timeout. Under high concurrency the default 10-conn pool becomes the
+// bottleneck; bumping it lets more goroutines hit Redis in parallel.
 func New(addrs map[string]string) (*Cluster, error) {
 	ring := hashring.New(150)
 	nodes := make(map[string]*Node, len(addrs))
 
 	for name, addr := range addrs {
-		c := redis.NewClient(&redis.Options{Addr: addr})
+		c := redis.NewClient(&redis.Options{
+			Addr:         addr,
+			PoolSize:     50,
+			MinIdleConns: 10,
+			PoolTimeout:  2 * time.Second,
+		})
 		if err := c.Ping(context.Background()).Err(); err != nil {
-			// Best-effort cleanup of clients already created.
 			for _, n := range nodes {
 				_ = n.Client.Close()
 			}
@@ -51,8 +58,6 @@ func New(addrs map[string]string) (*Cluster, error) {
 }
 
 // ClientFor returns the Redis client that should hold state for the given key.
-// Same key → same client, always. Panics only if the cluster is empty
-// (programmer error during init).
 func (c *Cluster) ClientFor(key string) *redis.Client {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -64,8 +69,7 @@ func (c *Cluster) ClientFor(key string) *redis.Client {
 	return c.nodes[name].Client
 }
 
-// NodeFor returns the logical node name responsible for a key. Used by the
-// /cluster/info endpoint and the dashboard.
+// NodeFor returns the logical node name responsible for a key.
 func (c *Cluster) NodeFor(key string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -79,7 +83,7 @@ func (c *Cluster) Nodes() []string {
 	return c.ring.Nodes()
 }
 
-// Close shuts down every Redis client. Call on server shutdown.
+// Close shuts down every Redis client.
 func (c *Cluster) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
